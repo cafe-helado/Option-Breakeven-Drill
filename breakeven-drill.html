@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<title>Breakeven Drill</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>"/>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#f8f9fc;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none}
+input[type=number]{-moz-appearance:textfield}
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.gcard{animation:fadeIn .25s ease-out}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const {useState,useCallback,useMemo,useEffect,useRef}=React;
+
+/* ═══ MATH ═══ */
+const R2=n=>Math.round(n*100)/100;
+const R4=n=>Math.round(n*10000)/10000;
+const rand=(a,b)=>a+Math.random()*(b-a);
+const randInt=(a,b)=>Math.floor(rand(a,b+1));
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+
+function legPnl(leg,S){
+  const raw=leg.type==="call"?Math.max(0,S-leg.K):Math.max(0,leg.K-S);
+  return(leg.side==="long"?raw-leg.prem:leg.prem-raw)*leg.qty;
+}
+function netDelta(legs){
+  return legs.reduce((s,l)=>s+(l.type==="call"?1:-1)*(l.side==="long"?1:-1)*l.delta*l.qty,0);
+}
+function totalPnl(legs,spot,S,hedged){
+  let pnl=legs.reduce((s,l)=>s+legPnl(l,S),0);
+  if(hedged)pnl+=-netDelta(legs)*(S-spot);
+  return pnl;
+}
+function findBreakevens(legs,spot,hedged){
+  const Ks=legs.map(l=>l.K);
+  const lo=Math.min(spot,...Ks)-20,hi=Math.max(spot,...Ks)+20;
+  const step=0.005,bes=[];
+  let prev=totalPnl(legs,spot,lo,hedged);
+  for(let s=lo+step;s<=hi;s+=step){
+    const cur=totalPnl(legs,spot,s,hedged);
+    if((prev<0&&cur>=0)||(prev>0&&cur<=0))bes.push(R2(s-step*(cur/(cur-prev))));
+    prev=cur;
+  }
+  return[...new Set(bes)].sort((a,b)=>a-b);
+}
+function payoffCurve(legs,spot,hedged){
+  const Ks=legs.map(l=>l.K);
+  const lo=Math.min(spot,...Ks)-12,hi=Math.max(spot,...Ks)+12,pts=[];
+  for(let s=lo;s<=hi;s+=0.15)pts.push({s:R2(s),pnl:R4(totalPnl(legs,spot,s,hedged))});
+  return pts;
+}
+
+/* ═══ STRUCTURE GEN ═══ */
+function calcDelta(spot,K,type){
+  const m=(spot-K)/spot;
+  return type==="call"?R2(clamp(0.5+m*2.8,0.04,0.96)):R2(clamp(0.5-m*2.8,0.04,0.96));
+}
+function calcPrem(spot,K,type,delta){
+  const intr=type==="call"?Math.max(0,spot-K):Math.max(0,K-spot);
+  return R2(Math.max(0.05,intr+spot*0.025*(1-Math.abs(delta-0.5)*1.4)));
+}
+function mkLeg(spot,K,type,side,qty=1){
+  K=Math.round(K);
+  const delta=calcDelta(spot,K,type);
+  return{type,side,K,delta,prem:calcPrem(spot,K,type,delta),qty};
+}
+function genM(){return pick(["OTM","ATM","ITM"])}
+function sAndK(m,t){
+  const spot=R2(rand(25,95)),off=randInt(2,5);
+  let K;
+  if(m==="ATM")K=Math.round(spot);
+  else if(m==="ITM")K=t==="call"?Math.round(spot)-off:Math.round(spot)+off;
+  else K=t==="call"?Math.round(spot)+off:Math.round(spot)-off;
+  return{spot,K:Math.max(2,K)};
+}
+
+const STRUCTS={
+  "Long Call":()=>{const m=genM(),{spot,K}=sAndK(m,"call");return{name:`Long Call (${m})`,spot,legs:[mkLeg(spot,K,"call","long")]};},
+  "Short Call":()=>{const m=genM(),{spot,K}=sAndK(m,"call");return{name:`Short Call (${m})`,spot,legs:[mkLeg(spot,K,"call","short")]};},
+  "Long Put":()=>{const m=genM(),{spot,K}=sAndK(m,"put");return{name:`Long Put (${m})`,spot,legs:[mkLeg(spot,K,"put","long")]};},
+  "Short Put":()=>{const m=genM(),{spot,K}=sAndK(m,"put");return{name:`Short Put (${m})`,spot,legs:[mkLeg(spot,K,"put","short")]};},
+  "Straddle":()=>{const side=pick(["long","short"]),spot=R2(rand(30,85)),K=Math.round(spot);return{name:`${side==="long"?"Long":"Short"} Straddle`,spot,legs:[mkLeg(spot,K,"call",side),mkLeg(spot,K,"put",side)]};},
+  "Strangle":()=>{const side=pick(["long","short"]),spot=R2(rand(30,85)),w=randInt(2,5);return{name:`${side==="long"?"Long":"Short"} Strangle`,spot,legs:[mkLeg(spot,Math.round(spot)+w,"call",side),mkLeg(spot,Math.round(spot)-w,"put",side)]};},
+  "Vertical Spread":()=>{
+    const t=pick(["call","put"]),dir=pick(["Bull","Bear"]),spot=R2(rand(30,85)),w=randInt(2,5),mid=Math.round(spot),loK=mid-w,hiK=mid+w;
+    let legs;if(t==="call")legs=dir==="Bull"?[mkLeg(spot,loK,"call","long"),mkLeg(spot,hiK,"call","short")]:[mkLeg(spot,hiK,"call","long"),mkLeg(spot,loK,"call","short")];
+    else legs=dir==="Bull"?[mkLeg(spot,loK,"put","long"),mkLeg(spot,hiK,"put","short")]:[mkLeg(spot,hiK,"put","long"),mkLeg(spot,loK,"put","short")];
+    return{name:`${dir} ${t==="call"?"Call":"Put"} Spread`,spot,legs};
+  },
+  "Butterfly":()=>{
+    const t=pick(["call","put"]),side=pick(["long","short"]),spot=R2(rand(35,75)),w=randInt(2,5),midK=Math.round(spot);
+    const o=side==="long"?"long":"short",inn=side==="long"?"short":"long";
+    return{name:`${side==="long"?"Long":"Short"} ${t==="call"?"Call":"Put"} Fly`,spot,legs:[mkLeg(spot,midK-w,t,o),{...mkLeg(spot,midK,t,inn),qty:2},mkLeg(spot,midK+w,t,o)]};
+  },
+  "Ratio Spread":()=>{
+    const t=pick(["call","put"]),spot=R2(rand(35,75)),w=randInt(2,5),ratio=pick([2,3]);
+    let longK,shortK;if(t==="call"){longK=Math.round(spot)-randInt(0,2);shortK=longK+w;}else{longK=Math.round(spot)+randInt(0,2);shortK=longK-w;}
+    return{name:`1×${ratio} ${t==="call"?"Call":"Put"} Ratio`,spot,legs:[mkLeg(spot,longK,t,"long"),{...mkLeg(spot,shortK,t,"short"),qty:ratio}]};
+  },
+  "Composite":()=>{
+    const spot=R2(rand(35,75)),n=randInt(2,4),legs=[];
+    for(let i=0;i<n;i++){const t=pick(["call","put"]),side=pick(["long","short"]),K=Math.max(5,Math.round(spot)+randInt(-6,6));legs.push(mkLeg(spot,K,t,side,randInt(1,2)));}
+    return{name:"Composite",spot,legs};
+  },
+};
+const STRUCT_KEYS=Object.keys(STRUCTS);
+const STRUCT_GROUPS=[
+  {label:"Single Legs",keys:["Long Call","Short Call","Long Put","Short Put"]},
+  {label:"Volatility",keys:["Straddle","Strangle"]},
+  {label:"Spreads",keys:["Vertical Spread","Butterfly","Ratio Spread"]},
+  {label:"Complex",keys:["Composite"]},
+];
+
+/* ═══ CHART ═══ */
+function Chart({data,breakevens,spot,strikes,legs,hedged}){
+  const W=540,H=280,P={t:30,r:28,b:44,l:56},cw=W-P.l-P.r,ch=H-P.t-P.b;
+  const xMin=data[0].s,xMax=data[data.length-1].s,pnls=data.map(d=>d.pnl);
+  const yMin=Math.min(...pnls,0),yMax=Math.max(...pnls,0),yPad=Math.max((yMax-yMin)*0.12,0.3);
+  const sx=v=>P.l+((v-xMin)/(xMax-xMin))*cw;
+  const sy=v=>P.t+ch-((v-(yMin-yPad))/(yMax+yPad-(yMin-yPad)))*ch;
+  const zeroY=sy(0);
+  const lineD=data.map((d,i)=>`${i===0?"M":"L"}${sx(d.s)},${sy(d.pnl)}`).join(" ");
+  const xStep=Math.max(1,Math.ceil((xMax-xMin)/7)),xTicks=[];
+  for(let v=Math.ceil(xMin);v<=xMax;v+=xStep)xTicks.push(v);
+  const yRange=yMax+yPad-(yMin-yPad),yStep=Math.max(0.25,Math.ceil((yRange/5)*4)/4),yTicks=[];
+  for(let v=Math.ceil((yMin-yPad)/yStep)*yStep;v<=yMax+yPad;v+=yStep)yTicks.push(R2(v));
+
+  const allK=[...new Set((legs||[]).map(l=>l.K))].sort((a,b)=>a-b);
+  const boundaries=[xMin,...allK,xMax];
+  const regions=[];
+  for(let i=0;i<boundaries.length-1;i++){
+    const mid=(boundaries[i]+boundaries[i+1])/2;
+    const eps=0.05;
+    const p1=totalPnl(legs||[],spot,mid-eps,hedged);
+    const p2=totalPnl(legs||[],spot,mid+eps,hedged);
+    const slope=R2((p2-p1)/(2*eps));
+    if(mid>=xMin&&mid<=xMax)regions.push({x:mid,slope});
+  }
+
+  return(
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",maxWidth:560,height:"auto",display:"block"}}>
+      {yTicks.map(v=><line key={v} x1={P.l} x2={W-P.r} y1={sy(v)} y2={sy(v)} stroke="#e8e8ee" strokeWidth="0.7"/>)}
+      <line x1={P.l} x2={W-P.r} y1={zeroY} y2={zeroY} stroke="#b0b0c0" strokeWidth="1.2"/>
+      {xTicks.map(v=><text key={v} x={sx(v)} y={H-10} textAnchor="middle" fill="#888" fontSize="10" fontFamily="'DM Mono',monospace">{v}</text>)}
+      {yTicks.map(v=><text key={v} x={P.l-8} y={sy(v)+3.5} textAnchor="end" fill="#888" fontSize="10" fontFamily="'DM Mono',monospace">{v.toFixed(2)}</text>)}
+      <clipPath id="above"><rect x={P.l} y={P.t} width={cw} height={zeroY-P.t}/></clipPath>
+      <clipPath id="below"><rect x={P.l} y={zeroY} width={cw} height={P.t+ch-zeroY}/></clipPath>
+      <path d={`${lineD} L${sx(xMax)},${zeroY} L${sx(xMin)},${zeroY} Z`} fill="#16a34a" opacity={0.08} clipPath="url(#above)"/>
+      <path d={`${lineD} L${sx(xMax)},${zeroY} L${sx(xMin)},${zeroY} Z`} fill="#dc2626" opacity={0.08} clipPath="url(#below)"/>
+      <path d={lineD} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinejoin="round"/>
+      {strikes.map((k,i)=><g key={`k${i}`}><line x1={sx(k)} x2={sx(k)} y1={P.t} y2={H-P.b} stroke="#f59e0b" strokeWidth="1" strokeDasharray="4,3" opacity="0.7"/><text x={sx(k)} y={P.t-6} textAnchor="middle" fill="#d97706" fontSize="9" fontWeight="600" fontFamily="'DM Mono',monospace">K={k}</text></g>)}
+      {regions.map((r,i)=>(
+        <g key={`d${i}`}>
+          <rect x={sx(r.x)-26} y={P.t+2} width="52" height="16" rx="4" fill="#f0f9ff" stroke="#bfdbfe" strokeWidth="0.7" opacity="0.9"/>
+          <text x={sx(r.x)} y={P.t+13} textAnchor="middle" fill="#2563eb" fontSize="9" fontWeight="600" fontFamily="'DM Mono',monospace">Δ={r.slope>0?"+":""}{r.slope}</text>
+        </g>
+      ))}
+      <line x1={sx(spot)} x2={sx(spot)} y1={P.t} y2={H-P.b} stroke="#7c3aed" strokeWidth="1" strokeDasharray="2,3" opacity="0.5"/>
+      <text x={sx(spot)} y={H-P.b+30} textAnchor="middle" fill="#7c3aed" fontSize="9" fontFamily="'DM Mono',monospace">Spot={spot}</text>
+      {breakevens.map((be,i)=><g key={`be${i}`}><line x1={sx(be)} x2={sx(be)} y1={zeroY-22} y2={zeroY+22} stroke="#e11d48" strokeWidth="1.5" opacity="0.5"/><circle cx={sx(be)} cy={zeroY} r="5" fill="#e11d48" stroke="#fff" strokeWidth="2"/><rect x={sx(be)-24} y={zeroY-36} width="48" height="18" rx="4" fill="#e11d48"/><text x={sx(be)} y={zeroY-24} textAnchor="middle" fill="#fff" fontSize="10" fontWeight="700" fontFamily="'DM Mono',monospace">{be}</text></g>)}
+      <text x={W/2} y={H-P.b+40} textAnchor="middle" fill="#999" fontSize="10" fontFamily="'DM Mono',monospace">Spot at Expiration</text>
+      <text x={14} y={H/2} textAnchor="middle" fill="#999" fontSize="10" fontFamily="'DM Mono',monospace" transform={`rotate(-90,14,${H/2})`}>P&L / share</text>
+    </svg>
+  );
+}
+
+/* ═══ CHART MODAL ═══ */
+function ChartModal({data,breakevens,spot,strikes,legs,hedged,onClose}){
+  return(
+    <div onClick={onClose} style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(0,0,0,0.3)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:20,padding:"24px 20px 18px",maxWidth:620,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <span style={{fontFamily:"'DM Mono',monospace",fontSize:12,fontWeight:500,color:"#1e293b",letterSpacing:1.5,textTransform:"uppercase"}}>Payoff Diagram</span>
+          <button onClick={onClose} style={{background:"#f1f5f9",border:"none",borderRadius:8,color:"#64748b",padding:"4px 12px",cursor:"pointer",fontSize:16,fontFamily:"'DM Mono',monospace"}}>✕</button>
+        </div>
+        <Chart data={data} breakevens={breakevens} spot={spot} strikes={strikes} legs={legs} hedged={hedged}/>
+        <div style={{marginTop:12,display:"flex",gap:18,justifyContent:"center",flexWrap:"wrap"}}>
+          {[{l:"P&L",c:"#2563eb"},{l:"Strikes",c:"#f59e0b"},{l:"Spot",c:"#7c3aed"},{l:"Breakevens",c:"#e11d48"},{l:"Δ Slope",c:"#2563eb"}].map(x=>
+            <span key={x.l} style={{fontSize:10,color:x.c,fontFamily:"'DM Mono',monospace",fontWeight:500}}>● {x.l}</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══ NUMPAD ═══ */
+function Numpad({onKey}){
+  const keys=["1","2","3","4","5","6","7","8","9",".","0","⌫"];
+  return(
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,maxWidth:320,margin:"0 auto"}}>
+      {keys.map(k=>(
+        <button key={k} onClick={()=>onKey(k)} style={{
+          padding:"16px 0",fontSize:24,fontWeight:500,fontFamily:"'DM Mono',monospace",
+          background:k==="⌫"?"#fee2e2":"#f8fafc",color:k==="⌫"?"#dc2626":"#1e293b",
+          border:"1px solid #e2e8f0",borderRadius:12,cursor:"pointer",
+          WebkitTapHighlightColor:"transparent",userSelect:"none",transition:"background 0.1s",
+        }}>{k}</button>
+      ))}
+    </div>
+  );
+}
+
+/* ═══ LANDING PAGE ═══ */
+function LandingPage({onStart}){
+  const[selected,setSelected]=useState(new Set(STRUCT_KEYS));
+  const[timeLimit,setTimeLimit]=useState(60);
+  const allSelected=selected.size===STRUCT_KEYS.length;
+
+  const toggleAll=()=>{if(allSelected)setSelected(new Set());else setSelected(new Set(STRUCT_KEYS));};
+  const toggle=k=>{const next=new Set(selected);next.has(k)?next.delete(k):next.add(k);setSelected(next);};
+  const toggleGroup=keys=>{const allIn=keys.every(k=>selected.has(k));const next=new Set(selected);keys.forEach(k=>allIn?next.delete(k):next.add(k));setSelected(next);};
+
+  const timeOptions=[{label:"1 min",val:60},{label:"2 min",val:120},{label:"4 min",val:240},{label:"Unlimited",val:0}];
+
+  return(
+    <div style={{minHeight:"100vh",background:"#f8f9fc",fontFamily:"'DM Mono','IBM Plex Mono',monospace",padding:"40px 16px 60px",display:"flex",flexDirection:"column",alignItems:"center"}}>
+      <div style={{textAlign:"center",marginBottom:36,animation:"fadeUp 0.4s ease-out"}}>
+        <h1 style={{fontFamily:"'Instrument Serif',Georgia,serif",fontSize:"clamp(32px,6vw,48px)",fontWeight:400,color:"#1e293b",marginBottom:6,letterSpacing:-0.5}}>Breakeven Drill</h1>
+        <p style={{fontSize:12,color:"#94a3b8",letterSpacing:2,textTransform:"uppercase"}}>Options Structures · Per Share · At Expiration</p>
+      </div>
+      <div style={{maxWidth:520,width:"100%",animation:"fadeUp 0.5s ease-out"}}>
+        <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:20,padding:"20px 22px",marginBottom:16,boxShadow:"0 2px 12px rgba(0,0,0,0.04)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <span style={{fontSize:10,color:"#64748b",letterSpacing:2,textTransform:"uppercase",fontWeight:500}}>Structures</span>
+            <button onClick={toggleAll} style={{fontSize:11,padding:"4px 14px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Mono',monospace",background:allSelected?"#2563eb":"#f8fafc",color:allSelected?"#fff":"#64748b",border:allSelected?"none":"1px solid #e2e8f0",fontWeight:500}}>{allSelected?"Deselect All":"Select All"}</button>
+          </div>
+          {STRUCT_GROUPS.map(g=>(
+            <div key={g.label} style={{marginBottom:12}}>
+              <button onClick={()=>toggleGroup(g.keys)} style={{fontSize:9,color:"#94a3b8",letterSpacing:1.5,textTransform:"uppercase",background:"none",border:"none",cursor:"pointer",marginBottom:6,fontFamily:"'DM Mono',monospace",fontWeight:500,padding:0}}>{g.label}</button>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {g.keys.map(k=>{const on=selected.has(k);return(
+                  <button key={k} onClick={()=>toggle(k)} style={{fontSize:11,padding:"6px 12px",borderRadius:10,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:on?500:400,background:on?"#eff6ff":"#f8fafc",color:on?"#2563eb":"#94a3b8",border:`1.5px solid ${on?"#bfdbfe":"#e2e8f0"}`,transition:"all 0.15s"}}>{k}</button>
+                );})}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:20,padding:"20px 22px",marginBottom:24,boxShadow:"0 2px 12px rgba(0,0,0,0.04)"}}>
+          <span style={{fontSize:10,color:"#64748b",letterSpacing:2,textTransform:"uppercase",fontWeight:500,display:"block",marginBottom:12}}>Time Per Question</span>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+            {timeOptions.map(t=>{const on=timeLimit===t.val;return(
+              <button key={t.val} onClick={()=>setTimeLimit(t.val)} style={{fontSize:12,padding:"8px 18px",borderRadius:10,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:on?500:400,background:on?"#2563eb":"#f8fafc",color:on?"#fff":"#64748b",border:on?"none":"1.5px solid #e2e8f0",transition:"all 0.15s"}}>{t.label}</button>
+            );})}
+          </div>
+        </div>
+        <button onClick={()=>{if(selected.size>0)onStart([...selected],timeLimit);}} disabled={selected.size===0} style={{width:"100%",padding:"16px",fontSize:15,fontWeight:500,letterSpacing:1.5,fontFamily:"'DM Mono',monospace",background:selected.size>0?"linear-gradient(135deg,#2563eb,#4f46e5)":"#e2e8f0",color:selected.size>0?"#fff":"#94a3b8",border:"none",borderRadius:14,cursor:selected.size>0?"pointer":"not-allowed",boxShadow:selected.size>0?"0 4px 20px rgba(37,99,235,0.3)":"none",transition:"all 0.2s"}}>START DRILL</button>
+      </div>
+    </div>
+  );
+}
+
+/* ═══ GAME SCREEN ═══ */
+function GameScreen({structKeys,timeLimit,onExit}){
+  const[problem,setProblem]=useState(null);
+  const[hedged,setHedged]=useState(false);
+  const[answers,setAnswers]=useState([""]);
+  const[activeIdx,setActiveIdx]=useState(0);
+  const[submitted,setSubmitted]=useState(false);
+  const[correct,setCorrect]=useState(null);
+  const[showChart,setShowChart]=useState(false);
+  const[score,setScore]=useState({hit:0,total:0});
+  const[streak,setStreak]=useState(0);
+  const[bestStreak,setBestStreak]=useState(0);
+  const[history,setHistory]=useState([]);
+  const[elapsed,setElapsed]=useState(0);
+  const[timerActive,setTimerActive]=useState(false);
+  const[timeUp,setTimeUp]=useState(false);
+  const timerRef=useRef(null);
+
+  useEffect(()=>{
+    if(timerActive){timerRef.current=setInterval(()=>setElapsed(e=>e+1),1000);}
+    else clearInterval(timerRef.current);
+    return()=>clearInterval(timerRef.current);
+  },[timerActive]);
+
+  useEffect(()=>{
+    if(timeLimit>0&&elapsed>=timeLimit&&!submitted&&!timeUp){
+      setTimeUp(true);setTimerActive(false);doSubmit(true);
+    }
+  },[elapsed,timeLimit,submitted,timeUp]);
+
+  const generate=useCallback(()=>{
+    const p=STRUCTS[pick(structKeys)]();
+    setProblem(p);setHedged(pick([true,false]));setAnswers([""]);setActiveIdx(0);
+    setSubmitted(false);setCorrect(null);setShowChart(false);setTimeUp(false);
+    setElapsed(0);setTimerActive(true);
+  },[structKeys]);
+
+  useEffect(()=>{generate();},[generate]);
+
+  const correctBEs=useMemo(()=>problem?findBreakevens(problem.legs,problem.spot,hedged):[],[problem,hedged]);
+  const chartData=useMemo(()=>problem?payoffCurve(problem.legs,problem.spot,hedged):[],[problem,hedged]);
+
+  const doSubmit=(forced=false)=>{
+    if(submitted)return;
+    setTimerActive(false);
+    const userBEs=answers.map(a=>parseFloat(a)).filter(a=>!isNaN(a)).sort((a,b)=>a-b);
+    let ok=userBEs.length===correctBEs.length;
+    if(ok)for(let i=0;i<correctBEs.length;i++)if(Math.abs(userBEs[i]-correctBEs[i])>0.02)ok=false;
+    if(forced&&userBEs.length===0)ok=false;
+    setSubmitted(true);setCorrect(ok);
+    setScore(p=>({hit:p.hit+(ok?1:0),total:p.total+1}));
+    const ns=ok?streak+1:0;setStreak(ns);if(ns>bestStreak)setBestStreak(ns);
+    const fmt=`${Math.floor(elapsed/60)}:${String(elapsed%60).padStart(2,"0")}`;
+    setHistory(prev=>[{name:problem.name,hedged,ok,expected:correctBEs,given:userBEs,time:fmt},...prev].slice(0,40));
+  };
+
+  const handleKey=k=>{
+    if(submitted)return;
+    setAnswers(prev=>{
+      const next=[...prev];
+      if(k==="⌫")next[activeIdx]=next[activeIdx].slice(0,-1);
+      else if(k==="."){ if(!next[activeIdx].includes("."))next[activeIdx]+="."; }
+      else next[activeIdx]+=k;
+      return next;
+    });
+  };
+
+  useEffect(()=>{
+    const handler=e=>{
+      if(e.key==="Escape"){e.preventDefault();if(showChart){setShowChart(false);return;}onExit();return;}
+      if(e.key==="Enter"){e.preventDefault();if(!submitted)doSubmit(false);else generate();return;}
+      if(e.key==="Tab"&&!submitted){e.preventDefault();setActiveIdx(prev=>(prev+1)%answers.length);return;}
+      if(submitted)return;
+      if(e.key>="0"&&e.key<="9"){handleKey(e.key);return;}
+      if(e.key==="."||e.key===","){handleKey(".");return;}
+      if(e.key==="Backspace"){handleKey("⌫");return;}
+      if(e.key==="+"||e.key==="="){e.preventDefault();addBE();return;}
+      if(e.key==="-"&&answers.length>1){e.preventDefault();removeBE(answers.length-1);return;}
+    };
+    window.addEventListener("keydown",handler);
+    return()=>window.removeEventListener("keydown",handler);
+  });
+
+  const addBE=()=>{if(submitted)return;setAnswers(prev=>[...prev,""]);setActiveIdx(answers.length);};
+  const removeBE=i=>{if(submitted||answers.length<=1)return;setAnswers(prev=>prev.filter((_,idx)=>idx!==i));setActiveIdx(Math.max(0,activeIdx>=i?activeIdx-1:activeIdx));};
+
+  if(!problem)return null;
+
+  const strikes=[...new Set(problem.legs.map(l=>l.K))].sort((a,b)=>a-b);
+  const nd=R2(netDelta(problem.legs));
+  const pct=score.total?Math.round(score.hit/score.total*100):0;
+  const fmtTime=`${Math.floor(elapsed/60)}:${String(elapsed%60).padStart(2,"0")}`;
+  const timerFrac=timeLimit>0?Math.min(elapsed/timeLimit,1):0;
+  const timerColor=timerFrac<0.5?"#22c55e":timerFrac<0.8?"#f59e0b":"#ef4444";
+
+  return(
+    <div style={{minHeight:"100vh",background:"#f8f9fc",fontFamily:"'DM Mono','IBM Plex Mono',monospace",padding:"12px 12px 24px"}}>
+      {/* Top bar */}
+      <div style={{maxWidth:640,margin:"0 auto 8px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <button onClick={onExit} style={{fontSize:13,padding:"8px 16px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:500,background:"#fff",color:"#64748b",border:"1px solid #e2e8f0"}}>← Exit</button>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {[{l:"Score",v:`${score.hit}/${score.total}`,c:"#2563eb"},{l:"%",v:`${pct}%`,c:"#7c3aed"},{l:"Streak",v:streak,c:"#16a34a"},{l:"Best",v:bestStreak,c:"#d97706"}].map(s=>(
+            <div key={s.l} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"4px 12px",textAlign:"center",minWidth:52}}>
+              <div style={{fontSize:10,color:"#94a3b8",letterSpacing:1.5,textTransform:"uppercase"}}>{s.l}</div>
+              <div style={{fontSize:18,fontWeight:500,color:s.c}}>{s.v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Timer */}
+      {timeLimit>0&&(
+        <div style={{maxWidth:640,margin:"0 auto 8px"}}>
+          <div style={{background:"#e2e8f0",borderRadius:6,height:6,overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${(1-timerFrac)*100}%`,background:timerColor,borderRadius:6,transition:"width 1s linear, background 0.3s"}}/>
+          </div>
+          <div style={{textAlign:"right",fontSize:13,color:timerColor,fontWeight:500,marginTop:2}}>{fmtTime}{` / ${Math.floor(timeLimit/60)}:${String(timeLimit%60).padStart(2,"0")}`}</div>
+        </div>
+      )}
+      {timeLimit===0&&(
+        <div style={{maxWidth:640,margin:"0 auto 8px",textAlign:"right"}}>
+          <span style={{fontSize:13,color:"#94a3b8",fontWeight:500}}>{fmtTime}</span>
+        </div>
+      )}
+
+      {/* Problem card */}
+      <div className="gcard" key={score.total} style={{maxWidth:640,margin:"0 auto 10px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:18,padding:"16px 18px",boxShadow:"0 2px 16px rgba(0,0,0,0.05)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:6}}>
+          <h2 style={{fontFamily:"'Instrument Serif',Georgia,serif",fontSize:"clamp(20px,4vw,26px)",fontWeight:400,color:"#1e293b"}}>{problem.name}</h2>
+          <span style={{fontSize:12,fontWeight:500,padding:"4px 12px",borderRadius:16,letterSpacing:1,background:hedged?"#dcfce7":"#fef3c7",color:hedged?"#166534":"#92400e",border:`1px solid ${hedged?"#bbf7d0":"#fde68a"}`}}>{hedged?"Δ HEDGED":"UNHEDGED"}</span>
+        </div>
+
+        <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:"4px 12px",marginBottom:10}}>
+          <span style={{fontSize:12,color:"#94a3b8",letterSpacing:1}}>SPOT</span>
+          <span style={{fontSize:22,fontWeight:500,color:"#7c3aed"}}>{problem.spot}</span>
+        </div>
+
+        <div style={{overflowX:"auto",marginBottom:10}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:"clamp(13px,2.5vw,15px)"}}>
+            <thead><tr>
+              {["#","Type","Side","Strike","Δ","Prem","Qty"].map(h=>
+                <th key={h} style={{padding:"8px 6px",textAlign:"left",color:"#94a3b8",fontWeight:500,fontSize:11,letterSpacing:1.5,textTransform:"uppercase",borderBottom:"1px solid #f1f5f9"}}>{h}</th>
+              )}
+            </tr></thead>
+            <tbody>{problem.legs.map((l,i)=>
+              <tr key={i}>
+                <td style={{padding:"8px 6px",color:"#cbd5e1"}}>{i+1}</td>
+                <td style={{padding:"8px 6px",fontWeight:500,color:l.type==="call"?"#2563eb":"#e11d48"}}>{l.type.toUpperCase()}</td>
+                <td style={{padding:"8px 6px",fontWeight:500,color:l.side==="long"?"#16a34a":"#dc2626"}}>{l.side.toUpperCase()}</td>
+                <td style={{padding:"8px 6px",fontWeight:500,color:"#d97706"}}>{l.K}</td>
+                <td style={{padding:"8px 6px",color:"#475569"}}>{l.type==="put"?"-":""}{l.delta}</td>
+                <td style={{padding:"8px 6px",color:"#475569"}}>{l.prem}</td>
+                <td style={{padding:"8px 6px",color:"#475569"}}>{l.qty}</td>
+              </tr>
+            )}</tbody>
+          </table>
+        </div>
+
+        {hedged&&<div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:8,padding:"8px 14px",marginBottom:12,fontSize:14,color:"#166534"}}>
+          <span style={{fontWeight:500}}>Net Δ = {nd}</span> → hedge {R2(Math.abs(nd))} sh/opt {nd>0?"short":"long"} @ {problem.spot}
+        </div>}
+
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:12,color:"#94a3b8",marginBottom:8,letterSpacing:1.5,textTransform:"uppercase"}}>
+            Your breakeven{answers.length>1?"s":""}
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,alignItems:"center"}}>
+            {answers.map((a,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:4}}>
+                <div onClick={()=>!submitted&&setActiveIdx(i)} style={{
+                  minWidth:80,padding:"8px 12px",
+                  background:i===activeIdx&&!submitted?"#eff6ff":"#f8fafc",
+                  border:`1.5px solid ${i===activeIdx&&!submitted?"#2563eb":"#e2e8f0"}`,
+                  borderRadius:10,fontSize:18,fontFamily:"'DM Mono',monospace",
+                  color:a?"#1e293b":"#cbd5e1",cursor:submitted?"default":"pointer",
+                  transition:"border-color 0.15s",minHeight:38,display:"flex",alignItems:"center",
+                }}>
+                  {a||`BE ${i+1}`}
+                  {i===activeIdx&&!submitted&&<span style={{animation:"blink 1s infinite",marginLeft:1,color:"#2563eb"}}>|</span>}
+                </div>
+                {answers.length>1&&!submitted&&(
+                  <button onClick={()=>removeBE(i)} style={{background:"none",border:"none",color:"#ef4444",cursor:"pointer",fontSize:18,padding:"0 2px"}}>×</button>
+                )}
+              </div>
+            ))}
+            {!submitted&&<button onClick={addBE} style={{fontSize:18,width:38,height:38,borderRadius:10,border:"1.5px dashed #cbd5e1",background:"none",color:"#94a3b8",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>+</button>}
+          </div>
+        </div>
+
+        {submitted&&(
+          <div style={{padding:14,borderRadius:12,background:correct?"#f0fdf4":"#fef2f2",border:`1px solid ${correct?"#bbf7d0":"#fecaca"}`,marginBottom:12}}>
+            <div style={{fontSize:17,fontWeight:500,color:correct?"#16a34a":"#dc2626",marginBottom:6}}>
+              {timeUp&&!correct?"⏱ Time's up ":"" }{correct?"✓ Correct!":"✗ Not quite"}
+              <span style={{marginLeft:8,fontSize:13,color:"#94a3b8"}}>{fmtTime}</span>
+            </div>
+            <div style={{fontSize:14,color:"#64748b"}}>
+              BE{correctBEs.length!==1?"s":""}: {correctBEs.length===0?<span style={{color:"#d97706",fontWeight:500}}>None</span>:correctBEs.map((be,i)=><span key={i} style={{color:"#1e293b",fontWeight:500}}>{i>0?", ":""}{be}</span>)}
+            </div>
+          </div>
+        )}
+
+        {submitted&&(
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button onClick={()=>setShowChart(true)} style={{flex:1,padding:"12px",fontSize:14,fontWeight:500,fontFamily:"'DM Mono',monospace",background:"#fff",border:"1.5px solid #2563eb",borderRadius:12,color:"#2563eb",cursor:"pointer",letterSpacing:0.5}}>VIEW CHART</button>
+            <button onClick={generate} style={{flex:1,padding:"12px",fontSize:14,fontWeight:500,fontFamily:"'DM Mono',monospace",background:"linear-gradient(135deg,#2563eb,#4f46e5)",border:"none",borderRadius:12,color:"#fff",cursor:"pointer",letterSpacing:0.5,boxShadow:"0 2px 12px rgba(37,99,235,0.25)"}}>NEXT →</button>
+          </div>
+        )}
+      </div>
+
+      {/* Numpad */}
+      {!submitted&&(
+        <div style={{maxWidth:640,margin:"0 auto 12px"}}>
+          <Numpad onKey={handleKey}/>
+          <button onClick={()=>doSubmit(false)} style={{
+            width:"100%",maxWidth:320,display:"block",margin:"10px auto 0",
+            padding:"16px",fontSize:16,fontWeight:500,letterSpacing:1,fontFamily:"'DM Mono',monospace",
+            background:"linear-gradient(135deg,#2563eb,#4f46e5)",color:"#fff",border:"none",borderRadius:12,
+            cursor:"pointer",boxShadow:"0 2px 12px rgba(37,99,235,0.3)",
+          }}>SUBMIT</button>
+        </div>
+      )}
+
+      {/* History */}
+      {history.length>0&&(
+        <div style={{maxWidth:640,margin:"0 auto",background:"#fff",border:"1px solid #e2e8f0",borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 8px rgba(0,0,0,0.03)"}}>
+          <div style={{fontSize:10,color:"#94a3b8",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>History</div>
+          {history.slice(0,10).map((h,i)=>(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:i<Math.min(history.length,10)-1?"1px solid #f1f5f9":"none",fontSize:13,gap:8,flexWrap:"wrap"}}>
+              <div>
+                <span style={{color:h.ok?"#16a34a":"#dc2626",fontWeight:500}}>{h.ok?"✓":"✗"}</span>{" "}
+                <span style={{color:"#475569"}}>{h.name}</span>
+                <span style={{marginLeft:6,fontSize:10,padding:"2px 6px",borderRadius:5,background:h.hedged?"#dcfce7":"#fef3c7",color:h.hedged?"#166534":"#92400e"}}>{h.hedged?"ΔH":"UH"}</span>
+                <span style={{marginLeft:6,fontSize:11,color:"#cbd5e1"}}>{h.time}</span>
+              </div>
+              <div style={{color:"#94a3b8",fontSize:12}}>{h.expected.join(", ")||"—"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showChart&&<ChartModal data={chartData} breakevens={correctBEs} spot={problem.spot} strikes={strikes} legs={problem.legs} hedged={hedged} onClose={()=>setShowChart(false)}/>}
+    </div>
+  );
+}
+
+/* ═══ ROOT ═══ */
+function App(){
+  const[gameConfig,setGameConfig]=useState(null);
+  if(!gameConfig)return <LandingPage onStart={(keys,time)=>setGameConfig({keys,time})}/>;
+  return <GameScreen structKeys={gameConfig.keys} timeLimit={gameConfig.time} onExit={()=>setGameConfig(null)}/>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
