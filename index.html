@@ -129,7 +129,7 @@ const STRUCT_GROUPS=[
 
 /* ═══ CHART ═══ */
 function Chart({data,breakevens,spot,strikes,legs,hedged}){
-  const W=540,H=280,P={t:30,r:28,b:44,l:56},cw=W-P.l-P.r,ch=H-P.t-P.b;
+  const W=560,H=320,P={t:30,r:28,b:58,l:56},cw=W-P.l-P.r,ch=H-P.t-P.b;
   const xMin=data[0].s,xMax=data[data.length-1].s,pnls=data.map(d=>d.pnl);
   const yMin=Math.min(...pnls,0),yMax=Math.max(...pnls,0),yPad=Math.max((yMax-yMin)*0.12,0.3);
   const sx=v=>P.l+((v-xMin)/(xMax-xMin))*cw;
@@ -153,28 +153,51 @@ function Chart({data,breakevens,spot,strikes,legs,hedged}){
     if(mid>=xMin&&mid<=xMax)regions.push({x:mid,slope});
   }
 
+  // Stagger BE labels that are too close together
+  const beLabels=breakevens.map((be,i)=>{
+    const px=sx(be);
+    let yOff=-36; // default above zero line
+    // Check if this label overlaps with previous ones
+    for(let j=0;j<i;j++){
+      const prevPx=sx(breakevens[j]);
+      if(Math.abs(px-prevPx)<55){
+        yOff=14; // put below zero line instead
+        break;
+      }
+    }
+    return{be,px,yOff};
+  });
+
   return(
-    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",maxWidth:560,height:"auto",display:"block"}}>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",maxWidth:580,height:"auto",display:"block"}}>
       {yTicks.map(v=><line key={v} x1={P.l} x2={W-P.r} y1={sy(v)} y2={sy(v)} stroke="#e8e8ee" strokeWidth="0.7"/>)}
       <line x1={P.l} x2={W-P.r} y1={zeroY} y2={zeroY} stroke="#b0b0c0" strokeWidth="1.2"/>
-      {xTicks.map(v=><text key={v} x={sx(v)} y={H-10} textAnchor="middle" fill="#888" fontSize="10" fontFamily="'DM Mono',monospace">{v}</text>)}
+      {xTicks.map(v=><text key={v} x={sx(v)} y={H-P.b+16} textAnchor="middle" fill="#888" fontSize="10" fontFamily="'DM Mono',monospace">{v}</text>)}
       {yTicks.map(v=><text key={v} x={P.l-8} y={sy(v)+3.5} textAnchor="end" fill="#888" fontSize="10" fontFamily="'DM Mono',monospace">{v.toFixed(2)}</text>)}
       <clipPath id="above"><rect x={P.l} y={P.t} width={cw} height={zeroY-P.t}/></clipPath>
       <clipPath id="below"><rect x={P.l} y={zeroY} width={cw} height={P.t+ch-zeroY}/></clipPath>
       <path d={`${lineD} L${sx(xMax)},${zeroY} L${sx(xMin)},${zeroY} Z`} fill="#16a34a" opacity={0.08} clipPath="url(#above)"/>
       <path d={`${lineD} L${sx(xMax)},${zeroY} L${sx(xMin)},${zeroY} Z`} fill="#dc2626" opacity={0.08} clipPath="url(#below)"/>
       <path d={lineD} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinejoin="round"/>
-      {strikes.map((k,i)=><g key={`k${i}`}><line x1={sx(k)} x2={sx(k)} y1={P.t} y2={H-P.b} stroke="#f59e0b" strokeWidth="1" strokeDasharray="4,3" opacity="0.7"/><text x={sx(k)} y={P.t-6} textAnchor="middle" fill="#d97706" fontSize="9" fontWeight="600" fontFamily="'DM Mono',monospace">K={k}</text></g>)}
+      {strikes.map((k,i)=><g key={`k${i}`}><line x1={sx(k)} x2={sx(k)} y1={P.t} y2={P.t+ch} stroke="#f59e0b" strokeWidth="1" strokeDasharray="4,3" opacity="0.7"/><text x={sx(k)} y={P.t-6} textAnchor="middle" fill="#d97706" fontSize="9" fontWeight="600" fontFamily="'DM Mono',monospace">K={k}</text></g>)}
       {regions.map((r,i)=>(
         <g key={`d${i}`}>
           <rect x={sx(r.x)-26} y={P.t+2} width="52" height="16" rx="4" fill="#f0f9ff" stroke="#bfdbfe" strokeWidth="0.7" opacity="0.9"/>
           <text x={sx(r.x)} y={P.t+13} textAnchor="middle" fill="#2563eb" fontSize="9" fontWeight="600" fontFamily="'DM Mono',monospace">Δ={r.slope>0?"+":""}{r.slope}</text>
         </g>
       ))}
-      <line x1={sx(spot)} x2={sx(spot)} y1={P.t} y2={H-P.b} stroke="#7c3aed" strokeWidth="1" strokeDasharray="2,3" opacity="0.5"/>
-      <text x={sx(spot)} y={H-P.b+30} textAnchor="middle" fill="#7c3aed" fontSize="9" fontFamily="'DM Mono',monospace">Spot={spot}</text>
-      {breakevens.map((be,i)=><g key={`be${i}`}><line x1={sx(be)} x2={sx(be)} y1={zeroY-22} y2={zeroY+22} stroke="#e11d48" strokeWidth="1.5" opacity="0.5"/><circle cx={sx(be)} cy={zeroY} r="5" fill="#e11d48" stroke="#fff" strokeWidth="2"/><rect x={sx(be)-24} y={zeroY-36} width="48" height="18" rx="4" fill="#e11d48"/><text x={sx(be)} y={zeroY-24} textAnchor="middle" fill="#fff" fontSize="10" fontWeight="700" fontFamily="'DM Mono',monospace">{be}</text></g>)}
-      <text x={W/2} y={H-P.b+40} textAnchor="middle" fill="#999" fontSize="10" fontFamily="'DM Mono',monospace">Spot at Expiration</text>
+      {/* Spot marker - label inside chart area */}
+      <line x1={sx(spot)} x2={sx(spot)} y1={P.t} y2={P.t+ch} stroke="#7c3aed" strokeWidth="1" strokeDasharray="2,3" opacity="0.5"/>
+      <text x={sx(spot)+4} y={P.t+ch-6} textAnchor="start" fill="#7c3aed" fontSize="8" fontFamily="'DM Mono',monospace" opacity="0.7">S={spot}</text>
+      {/* Breakeven labels - staggered if close */}
+      {beLabels.map((bl,i)=><g key={`be${i}`}>
+        <line x1={bl.px} x2={bl.px} y1={zeroY-22} y2={zeroY+22} stroke="#e11d48" strokeWidth="1.5" opacity="0.5"/>
+        <circle cx={bl.px} cy={zeroY} r="5" fill="#e11d48" stroke="#fff" strokeWidth="2"/>
+        <rect x={bl.px-24} y={zeroY+bl.yOff} width="48" height="18" rx="4" fill="#e11d48"/>
+        <text x={bl.px} y={zeroY+bl.yOff+12} textAnchor="middle" fill="#fff" fontSize="10" fontWeight="700" fontFamily="'DM Mono',monospace">{bl.be}</text>
+      </g>)}
+      {/* Axis titles */}
+      <text x={(P.l+W-P.r)/2} y={H-6} textAnchor="middle" fill="#999" fontSize="10" fontFamily="'DM Mono',monospace">Spot at Expiration</text>
       <text x={14} y={H/2} textAnchor="middle" fill="#999" fontSize="10" fontFamily="'DM Mono',monospace" transform={`rotate(-90,14,${H/2})`}>P&L / share</text>
     </svg>
   );
@@ -298,14 +321,17 @@ function GameScreen({structKeys,timeLimit,onExit}){
 
   const generate=useCallback(()=>{
     const p=STRUCTS[pick(structKeys)]();
-    setProblem(p);setHedged(pick([true,false]));setAnswers([""]);setActiveIdx(0);
+    const h=pick([true,false]);
+    const bes=findBreakevens(p.legs,p.spot,h).filter(b=>b>=0);
+    const numBEs=Math.max(1,bes.length);
+    setProblem(p);setHedged(h);setAnswers(Array(numBEs).fill(""));setActiveIdx(0);
     setSubmitted(false);setCorrect(null);setShowChart(false);setTimeUp(false);
     setElapsed(0);setTimerActive(true);
   },[structKeys]);
 
   useEffect(()=>{generate();},[generate]);
 
-  const correctBEs=useMemo(()=>problem?findBreakevens(problem.legs,problem.spot,hedged):[],[problem,hedged]);
+  const correctBEs=useMemo(()=>problem?findBreakevens(problem.legs,problem.spot,hedged).filter(b=>b>=0):[],[problem,hedged]);
   const chartData=useMemo(()=>problem?payoffCurve(problem.legs,problem.spot,hedged):[],[problem,hedged]);
 
   const doSubmit=(forced=false)=>{
@@ -342,15 +368,10 @@ function GameScreen({structKeys,timeLimit,onExit}){
       if(e.key>="0"&&e.key<="9"){handleKey(e.key);return;}
       if(e.key==="."||e.key===","){handleKey(".");return;}
       if(e.key==="Backspace"){handleKey("⌫");return;}
-      if(e.key==="+"||e.key==="="){e.preventDefault();addBE();return;}
-      if(e.key==="-"&&answers.length>1){e.preventDefault();removeBE(answers.length-1);return;}
     };
     window.addEventListener("keydown",handler);
     return()=>window.removeEventListener("keydown",handler);
   });
-
-  const addBE=()=>{if(submitted)return;setAnswers(prev=>[...prev,""]);setActiveIdx(answers.length);};
-  const removeBE=i=>{if(submitted||answers.length<=1)return;setAnswers(prev=>prev.filter((_,idx)=>idx!==i));setActiveIdx(Math.max(0,activeIdx>=i?activeIdx-1:activeIdx));};
 
   if(!problem)return null;
 
@@ -432,26 +453,20 @@ function GameScreen({structKeys,timeLimit,onExit}){
           <div style={{fontSize:12,color:"#94a3b8",marginBottom:8,letterSpacing:1.5,textTransform:"uppercase"}}>
             Your breakeven{answers.length>1?"s":""}
           </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:6,alignItems:"center"}}>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
             {answers.map((a,i)=>(
-              <div key={i} style={{display:"flex",alignItems:"center",gap:4}}>
-                <div onClick={()=>!submitted&&setActiveIdx(i)} style={{
-                  minWidth:80,padding:"8px 12px",
-                  background:i===activeIdx&&!submitted?"#eff6ff":"#f8fafc",
-                  border:`1.5px solid ${i===activeIdx&&!submitted?"#2563eb":"#e2e8f0"}`,
-                  borderRadius:10,fontSize:18,fontFamily:"'DM Mono',monospace",
-                  color:a?"#1e293b":"#cbd5e1",cursor:submitted?"default":"pointer",
-                  transition:"border-color 0.15s",minHeight:38,display:"flex",alignItems:"center",
-                }}>
-                  {a||`BE ${i+1}`}
-                  {i===activeIdx&&!submitted&&<span style={{animation:"blink 1s infinite",marginLeft:1,color:"#2563eb"}}>|</span>}
-                </div>
-                {answers.length>1&&!submitted&&(
-                  <button onClick={()=>removeBE(i)} style={{background:"none",border:"none",color:"#ef4444",cursor:"pointer",fontSize:18,padding:"0 2px"}}>×</button>
-                )}
+              <div key={i} onClick={()=>!submitted&&setActiveIdx(i)} style={{
+                minWidth:90,padding:"8px 12px",
+                background:i===activeIdx&&!submitted?"#eff6ff":"#f8fafc",
+                border:`1.5px solid ${i===activeIdx&&!submitted?"#2563eb":"#e2e8f0"}`,
+                borderRadius:10,fontSize:18,fontFamily:"'DM Mono',monospace",
+                color:a?"#1e293b":"#cbd5e1",cursor:submitted?"default":"pointer",
+                transition:"border-color 0.15s",minHeight:38,display:"flex",alignItems:"center",
+              }}>
+                {a||`BE ${i+1}`}
+                {i===activeIdx&&!submitted&&<span style={{animation:"blink 1s infinite",marginLeft:1,color:"#2563eb"}}>|</span>}
               </div>
             ))}
-            {!submitted&&<button onClick={addBE} style={{fontSize:18,width:38,height:38,borderRadius:10,border:"1.5px dashed #cbd5e1",background:"none",color:"#94a3b8",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>+</button>}
           </div>
         </div>
 
