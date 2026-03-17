@@ -10,13 +10,17 @@
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#f8f9fc;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+body{background:#f8f9fc;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent;font-size:16px}
 input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none}
 input[type=number]{-moz-appearance:textfield}
 @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 .gcard{animation:fadeIn .25s ease-out}
+@media(max-width:480px){
+  .gcard table{font-size:15px !important}
+  .gcard table th{font-size:12px !important}
+}
 </style>
 </head>
 <body>
@@ -205,15 +209,53 @@ function Chart({data,breakevens,spot,strikes,legs,hedged}){
 
 /* ═══ CHART MODAL ═══ */
 function ChartModal({data,breakevens,spot,strikes,legs,hedged,onClose}){
+  const[zoom,setZoom]=useState(1);
+  const containerRef=useRef(null);
+  const zoomIn=()=>setZoom(z=>Math.min(z+0.5,4));
+  const zoomOut=()=>setZoom(z=>Math.max(z-0.5,1));
+  const resetZoom=()=>setZoom(1);
+
+  // Pinch-to-zoom
+  const lastDist=useRef(null);
+  const onTouchStart=e=>{
+    if(e.touches.length===2){
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      lastDist.current=Math.hypot(dx,dy);
+    }
+  };
+  const onTouchMove=e=>{
+    if(e.touches.length===2&&lastDist.current!==null){
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      const dist=Math.hypot(dx,dy);
+      const delta=(dist-lastDist.current)*0.008;
+      setZoom(z=>Math.min(4,Math.max(1,z+delta)));
+      lastDist.current=dist;
+      e.preventDefault();
+    }
+  };
+  const onTouchEnd=()=>{lastDist.current=null;};
+
   return(
-    <div onClick={onClose} style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(0,0,0,0.3)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:20,padding:"24px 20px 18px",maxWidth:620,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+    <div onClick={onClose} style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(0,0,0,0.35)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",padding:8}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:"16px 14px 12px",maxWidth:680,width:"100%",maxHeight:"95vh",display:"flex",flexDirection:"column",boxShadow:"0 20px 60px rgba(0,0,0,0.18)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexShrink:0}}>
           <span style={{fontFamily:"'DM Mono',monospace",fontSize:12,fontWeight:500,color:"#1e293b",letterSpacing:1.5,textTransform:"uppercase"}}>Payoff Diagram</span>
-          <button onClick={onClose} style={{background:"#f1f5f9",border:"none",borderRadius:8,color:"#64748b",padding:"4px 12px",cursor:"pointer",fontSize:16,fontFamily:"'DM Mono',monospace"}}>✕</button>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <button onClick={zoomOut} style={{width:32,height:32,borderRadius:8,border:"1px solid #e2e8f0",background:"#f8fafc",color:"#475569",fontSize:18,cursor:"pointer",fontFamily:"'DM Mono',monospace",display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
+            <button onClick={resetZoom} style={{padding:"4px 8px",borderRadius:8,border:"1px solid #e2e8f0",background:"#f8fafc",color:"#475569",fontSize:11,cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>{Math.round(zoom*100)}%</button>
+            <button onClick={zoomIn} style={{width:32,height:32,borderRadius:8,border:"1px solid #e2e8f0",background:"#f8fafc",color:"#475569",fontSize:18,cursor:"pointer",fontFamily:"'DM Mono',monospace",display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
+            <button onClick={onClose} style={{width:32,height:32,borderRadius:8,background:"#f1f5f9",border:"none",color:"#64748b",fontSize:16,cursor:"pointer",fontFamily:"'DM Mono',monospace",display:"flex",alignItems:"center",justifyContent:"center",marginLeft:4}}>✕</button>
+          </div>
         </div>
-        <Chart data={data} breakevens={breakevens} spot={spot} strikes={strikes} legs={legs} hedged={hedged}/>
-        <div style={{marginTop:12,display:"flex",gap:18,justifyContent:"center",flexWrap:"wrap"}}>
+        <div ref={containerRef} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+          style={{overflow:"auto",flex:1,WebkitOverflowScrolling:"touch",borderRadius:8,border:"1px solid #f1f5f9"}}>
+          <div style={{width:zoom===1?"100%":`${zoom*100}%`,minWidth:"100%",transition:"width 0.2s ease"}}>
+            <Chart data={data} breakevens={breakevens} spot={spot} strikes={strikes} legs={legs} hedged={hedged}/>
+          </div>
+        </div>
+        <div style={{marginTop:10,display:"flex",gap:18,justifyContent:"center",flexWrap:"wrap",flexShrink:0}}>
           {[{l:"P&L",c:"#2563eb"},{l:"Strikes",c:"#f59e0b"},{l:"Spot",c:"#7c3aed"},{l:"Breakevens",c:"#e11d48"},{l:"Δ Slope",c:"#2563eb"}].map(x=>
             <span key={x.l} style={{fontSize:10,color:x.c,fontFamily:"'DM Mono',monospace",fontWeight:500}}>● {x.l}</span>
           )}
@@ -230,7 +272,7 @@ function Numpad({onKey}){
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,maxWidth:320,margin:"0 auto"}}>
       {keys.map(k=>(
         <button key={k} onClick={()=>onKey(k)} style={{
-          padding:"16px 0",fontSize:24,fontWeight:500,fontFamily:"'DM Mono',monospace",
+          padding:"16px 0",fontSize:"clamp(24px,6vw,26px)",fontWeight:500,fontFamily:"'DM Mono',monospace",
           background:k==="⌫"?"#fee2e2":"#f8fafc",color:k==="⌫"?"#dc2626":"#1e293b",
           border:"1px solid #e2e8f0",borderRadius:12,cursor:"pointer",
           WebkitTapHighlightColor:"transparent",userSelect:"none",transition:"background 0.1s",
@@ -386,12 +428,12 @@ function GameScreen({structKeys,timeLimit,onExit}){
     <div style={{minHeight:"100vh",background:"#f8f9fc",fontFamily:"'DM Mono','IBM Plex Mono',monospace",padding:"12px 12px 24px"}}>
       {/* Top bar */}
       <div style={{maxWidth:640,margin:"0 auto 8px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <button onClick={onExit} style={{fontSize:13,padding:"8px 16px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:500,background:"#fff",color:"#64748b",border:"1px solid #e2e8f0"}}>← Exit</button>
+        <button onClick={onExit} style={{fontSize:"clamp(13px,3.2vw,14px)",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:500,background:"#fff",color:"#64748b",border:"1px solid #e2e8f0"}}>← Exit</button>
         <div style={{display:"flex",gap:6,alignItems:"center"}}>
           {[{l:"Score",v:`${score.hit}/${score.total}`,c:"#2563eb"},{l:"%",v:`${pct}%`,c:"#7c3aed"},{l:"Streak",v:streak,c:"#16a34a"},{l:"Best",v:bestStreak,c:"#d97706"}].map(s=>(
             <div key={s.l} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"4px 12px",textAlign:"center",minWidth:52}}>
-              <div style={{fontSize:10,color:"#94a3b8",letterSpacing:1.5,textTransform:"uppercase"}}>{s.l}</div>
-              <div style={{fontSize:18,fontWeight:500,color:s.c}}>{s.v}</div>
+              <div style={{fontSize:"clamp(10px,2.5vw,11px)",color:"#94a3b8",letterSpacing:1.5,textTransform:"uppercase"}}>{s.l}</div>
+              <div style={{fontSize:"clamp(18px,4.5vw,20px)",fontWeight:500,color:s.c}}>{s.v}</div>
             </div>
           ))}
         </div>
@@ -403,32 +445,32 @@ function GameScreen({structKeys,timeLimit,onExit}){
           <div style={{background:"#e2e8f0",borderRadius:6,height:6,overflow:"hidden"}}>
             <div style={{height:"100%",width:`${(1-timerFrac)*100}%`,background:timerColor,borderRadius:6,transition:"width 1s linear, background 0.3s"}}/>
           </div>
-          <div style={{textAlign:"right",fontSize:13,color:timerColor,fontWeight:500,marginTop:2}}>{fmtTime}{` / ${Math.floor(timeLimit/60)}:${String(timeLimit%60).padStart(2,"0")}`}</div>
+          <div style={{textAlign:"right",fontSize:"clamp(13px,3.2vw,14px)",color:timerColor,fontWeight:500,marginTop:2}}>{fmtTime}{` / ${Math.floor(timeLimit/60)}:${String(timeLimit%60).padStart(2,"0")}`}</div>
         </div>
       )}
       {timeLimit===0&&(
         <div style={{maxWidth:640,margin:"0 auto 8px",textAlign:"right"}}>
-          <span style={{fontSize:13,color:"#94a3b8",fontWeight:500}}>{fmtTime}</span>
+          <span style={{fontSize:"clamp(13px,3.2vw,14px)",color:"#94a3b8",fontWeight:500}}>{fmtTime}</span>
         </div>
       )}
 
       {/* Problem card */}
       <div className="gcard" key={score.total} style={{maxWidth:640,margin:"0 auto 10px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:18,padding:"16px 18px",boxShadow:"0 2px 16px rgba(0,0,0,0.05)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:6}}>
-          <h2 style={{fontFamily:"'Instrument Serif',Georgia,serif",fontSize:"clamp(20px,4vw,26px)",fontWeight:400,color:"#1e293b"}}>{problem.name}</h2>
-          <span style={{fontSize:12,fontWeight:500,padding:"4px 12px",borderRadius:16,letterSpacing:1,background:hedged?"#dcfce7":"#fef3c7",color:hedged?"#166534":"#92400e",border:`1px solid ${hedged?"#bbf7d0":"#fde68a"}`}}>{hedged?"Δ HEDGED":"UNHEDGED"}</span>
+          <h2 style={{fontFamily:"'Instrument Serif',Georgia,serif",fontSize:"clamp(22px,5vw,28px)",fontWeight:400,color:"#1e293b"}}>{problem.name}</h2>
+          <span style={{fontSize:"clamp(12px,3vw,13px)",fontWeight:500,padding:"4px 12px",borderRadius:16,letterSpacing:1,background:hedged?"#dcfce7":"#fef3c7",color:hedged?"#166534":"#92400e",border:`1px solid ${hedged?"#bbf7d0":"#fde68a"}`}}>{hedged?"Δ HEDGED":"UNHEDGED"}</span>
         </div>
 
-        <div style={{display:"inline-flex",alignItems:"center",gap:6,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:"4px 12px",marginBottom:10}}>
-          <span style={{fontSize:12,color:"#94a3b8",letterSpacing:1}}>SPOT</span>
-          <span style={{fontSize:22,fontWeight:500,color:"#7c3aed"}}>{problem.spot}</span>
+        <div style={{display:"inline-flex",alignItems:"center",gap:8,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 14px",marginBottom:12}}>
+          <span style={{fontSize:"clamp(12px,3vw,13px)",color:"#94a3b8",letterSpacing:1}}>SPOT</span>
+          <span style={{fontSize:"clamp(22px,5.5vw,26px)",fontWeight:500,color:"#7c3aed"}}>{problem.spot}</span>
         </div>
 
-        <div style={{overflowX:"auto",marginBottom:10}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:"clamp(13px,2.5vw,15px)"}}>
+        <div style={{overflowX:"auto",marginBottom:12}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:"clamp(14px,3.5vw,16px)"}}>
             <thead><tr>
               {["#","Type","Side","Strike","Δ","Prem","Qty"].map(h=>
-                <th key={h} style={{padding:"8px 6px",textAlign:"left",color:"#94a3b8",fontWeight:500,fontSize:11,letterSpacing:1.5,textTransform:"uppercase",borderBottom:"1px solid #f1f5f9"}}>{h}</th>
+                <th key={h} style={{padding:"8px 6px",textAlign:"left",color:"#94a3b8",fontWeight:500,fontSize:"clamp(11px,2.8vw,12px)",letterSpacing:1.5,textTransform:"uppercase",borderBottom:"1px solid #f1f5f9"}}>{h}</th>
               )}
             </tr></thead>
             <tbody>{problem.legs.map((l,i)=>
@@ -445,23 +487,23 @@ function GameScreen({structKeys,timeLimit,onExit}){
           </table>
         </div>
 
-        {hedged&&<div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:8,padding:"8px 14px",marginBottom:12,fontSize:14,color:"#166534"}}>
+        {hedged&&<div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:8,padding:"8px 14px",marginBottom:12,fontSize:"clamp(14px,3.5vw,15px)",color:"#166534"}}>
           <span style={{fontWeight:500}}>Net Δ = {nd}</span> → hedge {R2(Math.abs(nd))} sh/opt {nd>0?"short":"long"} @ {problem.spot}
         </div>}
 
-        <div style={{marginBottom:10}}>
-          <div style={{fontSize:12,color:"#94a3b8",marginBottom:8,letterSpacing:1.5,textTransform:"uppercase"}}>
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:"clamp(12px,3vw,13px)",color:"#94a3b8",marginBottom:8,letterSpacing:1.5,textTransform:"uppercase"}}>
             Your breakeven{answers.length>1?"s":""}
           </div>
           <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
             {answers.map((a,i)=>(
               <div key={i} onClick={()=>!submitted&&setActiveIdx(i)} style={{
-                minWidth:90,padding:"8px 12px",
+                minWidth:90,padding:"10px 14px",
                 background:i===activeIdx&&!submitted?"#eff6ff":"#f8fafc",
                 border:`1.5px solid ${i===activeIdx&&!submitted?"#2563eb":"#e2e8f0"}`,
-                borderRadius:10,fontSize:18,fontFamily:"'DM Mono',monospace",
+                borderRadius:10,fontSize:"clamp(18px,4.5vw,20px)",fontFamily:"'DM Mono',monospace",
                 color:a?"#1e293b":"#cbd5e1",cursor:submitted?"default":"pointer",
-                transition:"border-color 0.15s",minHeight:38,display:"flex",alignItems:"center",
+                transition:"border-color 0.15s",minHeight:42,display:"flex",alignItems:"center",
               }}>
                 {a||`BE ${i+1}`}
                 {i===activeIdx&&!submitted&&<span style={{animation:"blink 1s infinite",marginLeft:1,color:"#2563eb"}}>|</span>}
@@ -472,11 +514,11 @@ function GameScreen({structKeys,timeLimit,onExit}){
 
         {submitted&&(
           <div style={{padding:14,borderRadius:12,background:correct?"#f0fdf4":"#fef2f2",border:`1px solid ${correct?"#bbf7d0":"#fecaca"}`,marginBottom:12}}>
-            <div style={{fontSize:17,fontWeight:500,color:correct?"#16a34a":"#dc2626",marginBottom:6}}>
+            <div style={{fontSize:"clamp(17px,4.2vw,19px)",fontWeight:500,color:correct?"#16a34a":"#dc2626",marginBottom:6}}>
               {timeUp&&!correct?"⏱ Time's up ":"" }{correct?"✓ Correct!":"✗ Not quite"}
-              <span style={{marginLeft:8,fontSize:13,color:"#94a3b8"}}>{fmtTime}</span>
+              <span style={{marginLeft:8,fontSize:"clamp(13px,3.2vw,14px)",color:"#94a3b8"}}>{fmtTime}</span>
             </div>
-            <div style={{fontSize:14,color:"#64748b"}}>
+            <div style={{fontSize:"clamp(14px,3.5vw,15px)",color:"#64748b"}}>
               BE{correctBEs.length!==1?"s":""}: {correctBEs.length===0?<span style={{color:"#d97706",fontWeight:500}}>None</span>:correctBEs.map((be,i)=><span key={i} style={{color:"#1e293b",fontWeight:500}}>{i>0?", ":""}{be}</span>)}
             </div>
           </div>
@@ -484,8 +526,8 @@ function GameScreen({structKeys,timeLimit,onExit}){
 
         {submitted&&(
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <button onClick={()=>setShowChart(true)} style={{flex:1,padding:"12px",fontSize:14,fontWeight:500,fontFamily:"'DM Mono',monospace",background:"#fff",border:"1.5px solid #2563eb",borderRadius:12,color:"#2563eb",cursor:"pointer",letterSpacing:0.5}}>VIEW CHART</button>
-            <button onClick={generate} style={{flex:1,padding:"12px",fontSize:14,fontWeight:500,fontFamily:"'DM Mono',monospace",background:"linear-gradient(135deg,#2563eb,#4f46e5)",border:"none",borderRadius:12,color:"#fff",cursor:"pointer",letterSpacing:0.5,boxShadow:"0 2px 12px rgba(37,99,235,0.25)"}}>NEXT →</button>
+            <button onClick={()=>setShowChart(true)} style={{flex:1,padding:"14px",fontSize:"clamp(14px,3.5vw,15px)",fontWeight:500,fontFamily:"'DM Mono',monospace",background:"#fff",border:"1.5px solid #2563eb",borderRadius:12,color:"#2563eb",cursor:"pointer",letterSpacing:0.5}}>VIEW CHART</button>
+            <button onClick={generate} style={{flex:1,padding:"14px",fontSize:"clamp(14px,3.5vw,15px)",fontWeight:500,fontFamily:"'DM Mono',monospace",background:"linear-gradient(135deg,#2563eb,#4f46e5)",border:"none",borderRadius:12,color:"#fff",cursor:"pointer",letterSpacing:0.5,boxShadow:"0 2px 12px rgba(37,99,235,0.25)"}}>NEXT →</button>
           </div>
         )}
       </div>
@@ -496,7 +538,7 @@ function GameScreen({structKeys,timeLimit,onExit}){
           <Numpad onKey={handleKey}/>
           <button onClick={()=>doSubmit(false)} style={{
             width:"100%",maxWidth:320,display:"block",margin:"10px auto 0",
-            padding:"16px",fontSize:16,fontWeight:500,letterSpacing:1,fontFamily:"'DM Mono',monospace",
+            padding:"16px",fontSize:"clamp(16px,4vw,18px)",fontWeight:500,letterSpacing:1,fontFamily:"'DM Mono',monospace",
             background:"linear-gradient(135deg,#2563eb,#4f46e5)",color:"#fff",border:"none",borderRadius:12,
             cursor:"pointer",boxShadow:"0 2px 12px rgba(37,99,235,0.3)",
           }}>SUBMIT</button>
@@ -506,14 +548,14 @@ function GameScreen({structKeys,timeLimit,onExit}){
       {/* History */}
       {history.length>0&&(
         <div style={{maxWidth:640,margin:"0 auto",background:"#fff",border:"1px solid #e2e8f0",borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 8px rgba(0,0,0,0.03)"}}>
-          <div style={{fontSize:10,color:"#94a3b8",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>History</div>
+          <div style={{fontSize:"clamp(10px,2.5vw,11px)",color:"#94a3b8",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>History</div>
           {history.slice(0,10).map((h,i)=>(
-            <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:i<Math.min(history.length,10)-1?"1px solid #f1f5f9":"none",fontSize:13,gap:8,flexWrap:"wrap"}}>
+            <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:i<Math.min(history.length,10)-1?"1px solid #f1f5f9":"none",fontSize:"clamp(13px,3.2vw,14px)",gap:8,flexWrap:"wrap"}}>
               <div>
                 <span style={{color:h.ok?"#16a34a":"#dc2626",fontWeight:500}}>{h.ok?"✓":"✗"}</span>{" "}
                 <span style={{color:"#475569"}}>{h.name}</span>
-                <span style={{marginLeft:6,fontSize:10,padding:"2px 6px",borderRadius:5,background:h.hedged?"#dcfce7":"#fef3c7",color:h.hedged?"#166534":"#92400e"}}>{h.hedged?"ΔH":"UH"}</span>
-                <span style={{marginLeft:6,fontSize:11,color:"#cbd5e1"}}>{h.time}</span>
+                <span style={{marginLeft:6,fontSize:"clamp(10px,2.5vw,11px)",padding:"2px 6px",borderRadius:5,background:h.hedged?"#dcfce7":"#fef3c7",color:h.hedged?"#166534":"#92400e"}}>{h.hedged?"ΔH":"UH"}</span>
+                <span style={{marginLeft:6,fontSize:"clamp(11px,2.8vw,12px)",color:"#cbd5e1"}}>{h.time}</span>
               </div>
               <div style={{color:"#94a3b8",fontSize:12}}>{h.expected.join(", ")||"—"}</div>
             </div>
