@@ -33,6 +33,7 @@ const {useState,useCallback,useMemo,useEffect,useRef}=React;
 
 /* ═══ MATH ═══ */
 const R2=n=>Math.round(n*100)/100;
+const R3=n=>Math.round(n*1000)/1000;
 const R4=n=>Math.round(n*10000)/10000;
 const rand=(a,b)=>a+Math.random()*(b-a);
 const randInt=(a,b)=>Math.floor(rand(a,b+1));
@@ -54,11 +55,11 @@ function totalPnl(legs,spot,S,hedged){
 function findBreakevens(legs,spot,hedged){
   const Ks=legs.map(l=>l.K);
   const lo=Math.min(spot,...Ks)-20,hi=Math.max(spot,...Ks)+20;
-  const step=0.005,bes=[];
+  const step=0.002,bes=[];
   let prev=totalPnl(legs,spot,lo,hedged);
   for(let s=lo+step;s<=hi;s+=step){
     const cur=totalPnl(legs,spot,s,hedged);
-    if((prev<0&&cur>=0)||(prev>0&&cur<=0))bes.push(R2(s-step*(cur/(cur-prev))));
+    if((prev<0&&cur>=0)||(prev>0&&cur<=0))bes.push(R3(s-step*(cur/(cur-prev))));
     prev=cur;
   }
   return[...new Set(bes)].sort((a,b)=>a-b);
@@ -68,6 +69,115 @@ function payoffCurve(legs,spot,hedged){
   const lo=Math.min(spot,...Ks)-12,hi=Math.max(spot,...Ks)+12,pts=[];
   for(let s=lo;s<=hi;s+=0.15)pts.push({s:R2(s),pnl:R4(totalPnl(legs,spot,s,hedged))});
   return pts;
+}
+
+/* ═══ SOLUTION WALKTHROUGH GENERATOR ═══ */
+// Builds a step-by-step explanation anchored on the strike(s), slopes, and walk to breakevens.
+function buildSolution(legs,spot,hedged){
+  const strikes=[...new Set(legs.map(l=>l.K))].sort((a,b)=>a-b);
+  const nd=R3(netDelta(legs));
+  const hedgeShares=R3(Math.abs(nd));
+  const hedgeDir=nd>0?"short":"long"; // hedge offsets net delta
+
+  // Net premium: sum of (collected - paid) across legs, per share
+  let netPrem=0;
+  legs.forEach(l=>{ netPrem += (l.side==="long"? -l.prem : l.prem)*l.qty; });
+  netPrem=R3(netPrem);
+
+  // Slope of P&L just to the right of a given spot (per $1 up)
+  const slopeAt=(S)=>{
+    const eps=0.01;
+    return R3((totalPnl(legs,spot,S+eps,hedged)-totalPnl(legs,spot,S-eps,hedged))/(2*eps));
+  };
+
+  // Region midpoints between strikes for slope reporting
+  const lo=strikes[0]-15, hi=strikes[strikes.length-1]+15;
+  const bounds=[lo,...strikes,hi];
+  const regions=[];
+  for(let i=0;i<bounds.length-1;i++){
+    const mid=(bounds[i]+bounds[i+1])/2;
+    regions.push({
+      left:i===0?null:strikes[i-1],
+      right:i===bounds.length-2?null:strikes[i],
+      slope:slopeAt(mid),
+    });
+  }
+
+  const bes=findBreakevens(legs,spot,hedged).filter(b=>b>=0);
+
+  // P&L at each strike (the anchors)
+  const anchors=strikes.map(K=>({K,pnl:R3(totalPnl(legs,spot,K,hedged))}));
+
+  // Build narrative steps
+  const steps=[];
+
+  // Step 1: premium
+  const premLines=legs.map(l=>{
+    const verb=l.side==="long"?"pay":"collect";
+    const sign=l.side==="long"?"−":"+";
+    const q=l.qty>1?`${l.qty}× `:"";
+    return `${q}${l.side} ${l.type} @ ${l.K}: ${verb} ${sign}${R3(l.prem*l.qty)}`;
+  });
+  steps.push({
+    title:"1 · Net premium",
+    lines:[
+      ...premLines,
+      `Net premium = ${netPrem>=0?"+":""}${netPrem} per share ${netPrem>=0?"(credit)":"(debit)"}`,
+    ],
+  });
+
+  // Step 2: hedge (if hedged)
+  if(hedged && hedgeShares>0.001){
+    steps.push({
+      title:"2 · The hedge",
+      lines:[
+        `Net Δ = ${nd>=0?"+":""}${nd} → hedge ${hedgeShares} shares ${hedgeDir} @ ${spot}`,
+        `The hedge adds a sloped stock P&L: ${hedgeDir==="short"?"gains":"loses"} as price falls, ${hedgeDir==="short"?"loses":"gains"} as price rises.`,
+      ],
+    });
+  } else {
+    steps.push({
+      title:"2 · The hedge",
+      lines:["Unhedged — no stock leg. Each option slopes at 1.0 per $ once in-the-money, 0 when out-of-the-money."],
+    });
+  }
+
+  // Step 3: anchor(s) at the strike(s)
+  const anchorLines=anchors.map(a=>{
+    return `At K=${a.K} (spot finishes here): P&L = ${a.pnl>=0?"+":""}${a.pnl}`;
+  });
+  const peak=anchors.reduce((m,a)=>Math.abs(a.pnl)>Math.abs(m.pnl)?a:m,anchors[0]);
+  anchorLines.push(`This is your anchor — known P&L at a strike where options are worth 0 (only premium${hedged?" + hedge":""} remain).`);
+  steps.push({ title:`${hedged&&hedgeShares>0.001?"3":"3"} · Anchor at the strike${strikes.length>1?"s":""}`, lines:anchorLines });
+
+  // Step 4: slopes per region
+  const slopeLines=regions.map(r=>{
+    let label;
+    if(r.left===null) label=`Below ${r.right}`;
+    else if(r.right===null) label=`Above ${r.left}`;
+    else label=`Between ${r.left} and ${r.right}`;
+    const s=r.slope;
+    const desc=Math.abs(s)<0.001?"flat (max profit/loss plateau)":`slope ${s>0?"+":""}${s} per $1 up`;
+    return `${label}: ${desc}`;
+  });
+  slopeLines.push("Slope = how fast P&L changes per $1 move. Hedged single options split into (hedge ratio) on the OTM side and (1 − hedge ratio) on the ITM side — they sum to 1.");
+  steps.push({ title:"4 · Slope in each region", lines:slopeLines });
+
+  // Step 5: walk to breakevens
+  const beLines=bes.map(be=>{
+    // Find nearest strike anchor and slope used
+    let nearest=strikes[0], minD=Infinity;
+    strikes.forEach(K=>{ if(Math.abs(K-be)<minD){minD=Math.abs(K-be);nearest=K;} });
+    const anchorPnl=R3(totalPnl(legs,spot,nearest,hedged));
+    const dir=be>nearest?"above":"below";
+    const slope=slopeAt((be+nearest)/2);
+    const dist=R3(Math.abs(be-nearest));
+    return `BE ${be}: from K=${nearest} (P&L ${anchorPnl>=0?"+":""}${anchorPnl}), walk ${dir} ${nearest} ${dir==="above"?"+":"−"} ${Math.abs(anchorPnl)}/${Math.abs(slope)} = ${nearest} ${dir==="above"?"+":"−"} ${dist} = ${be}`;
+  });
+  if(bes.length===0) beLines.push("No positive breakeven — position is always profit or always loss in the positive-price region.");
+  steps.push({ title:"5 · Walk out: strike ± P&L ÷ slope", lines:beLines });
+
+  return { steps, breakevens:bes, netPrem, nd, hedgeShares, hedgeDir };
 }
 
 /* ═══ STRUCTURE GEN ═══ */
@@ -94,6 +204,28 @@ function sAndK(m,t){
   return{spot,K:Math.max(2,K)};
 }
 
+// Max profit / max loss over a wide price range. Returns {maxP, maxL, maxPUnbounded, maxLUnbounded}
+function maxProfitLoss(legs,spot,hedged){
+  const Ks=legs.map(l=>l.K);
+  const lo=0.01,hi=Math.max(spot,...Ks)*3+50;
+  let maxP=-Infinity,maxL=Infinity;
+  // sample at fine grid plus exact strikes (kinks live at strikes)
+  const pts=new Set([lo,hi,...Ks]);
+  for(let s=lo;s<=hi;s+=0.25)pts.add(R2(s));
+  [...pts].forEach(s=>{
+    const p=totalPnl(legs,spot,s,hedged);
+    if(p>maxP)maxP=p;
+    if(p<maxL)maxL=p;
+  });
+  // Detect unbounded behavior. Price floors at 0, so the downside is always bounded;
+  // only the upside (price → ∞) can produce a truly unlimited profit or loss.
+  const farHi=totalPnl(legs,spot,hi,hedged),farHi2=totalPnl(legs,spot,hi-1,hedged);
+  const upSlope=farHi-farHi2;
+  const maxPUnbounded=upSlope>0.001;   // P&L still rising at the far upside
+  const maxLUnbounded=upSlope<-0.001;  // P&L still falling at the far upside
+  return{maxP:R3(maxP),maxL:R3(maxL),maxPUnbounded,maxLUnbounded};
+}
+
 const STRUCTS={
   "Long Call":()=>{const m=genM(),{spot,K}=sAndK(m,"call");return{name:`Long Call (${m})`,spot,legs:[mkLeg(spot,K,"call","long")]};},
   "Short Call":()=>{const m=genM(),{spot,K}=sAndK(m,"call");return{name:`Short Call (${m})`,spot,legs:[mkLeg(spot,K,"call","short")]};},
@@ -117,17 +249,61 @@ const STRUCTS={
     let longK,shortK;if(t==="call"){longK=Math.round(spot)-randInt(0,2);shortK=longK+w;}else{longK=Math.round(spot)+randInt(0,2);shortK=longK-w;}
     return{name:`1×${ratio} ${t==="call"?"Call":"Put"} Ratio`,spot,legs:[mkLeg(spot,longK,t,"long"),{...mkLeg(spot,shortK,t,"short"),qty:ratio}]};
   },
+  "Iron Condor":()=>{
+    const spot=R2(rand(35,75)),mid=Math.round(spot),w1=randInt(3,6),w2=randInt(2,4);
+    const putShort=mid-w1,putLong=putShort-w2,callShort=mid+w1,callLong=callShort+w2;
+    return{name:"Iron Condor",spot,legs:[
+      mkLeg(spot,putLong,"put","long"),mkLeg(spot,putShort,"put","short"),
+      mkLeg(spot,callShort,"call","short"),mkLeg(spot,callLong,"call","long"),
+    ]};
+  },
+  "Iron Butterfly":()=>{
+    const spot=R2(rand(35,75)),mid=Math.round(spot),w=randInt(3,6);
+    return{name:"Iron Butterfly",spot,legs:[
+      mkLeg(spot,mid-w,"put","long"),mkLeg(spot,mid,"put","short"),
+      mkLeg(spot,mid,"call","short"),mkLeg(spot,mid+w,"call","long"),
+    ]};
+  },
+  "Jade Lizard":()=>{
+    const spot=R2(rand(35,75)),mid=Math.round(spot);
+    const putK=mid-randInt(2,5),callShort=mid+randInt(2,4),callLong=callShort+randInt(2,4);
+    return{name:"Jade Lizard",spot,legs:[
+      mkLeg(spot,putK,"put","short"),
+      mkLeg(spot,callShort,"call","short"),mkLeg(spot,callLong,"call","long"),
+    ]};
+  },
+  "Twisted Sister":()=>{
+    const spot=R2(rand(35,75)),mid=Math.round(spot);
+    const callK=mid+randInt(2,5),putShort=mid-randInt(2,4),putLong=putShort-randInt(2,4);
+    return{name:"Twisted Sister",spot,legs:[
+      mkLeg(spot,callK,"call","short"),
+      mkLeg(spot,putShort,"put","short"),mkLeg(spot,putLong,"put","long"),
+    ]};
+  },
+  "Big Lizard":()=>{
+    const spot=R2(rand(35,75)),mid=Math.round(spot),w=randInt(3,6);
+    return{name:"Big Lizard",spot,legs:[
+      mkLeg(spot,mid,"put","short"),mkLeg(spot,mid,"call","short"),
+      mkLeg(spot,mid+w,"call","long"),
+    ]};
+  },
   "Composite":()=>{
     const spot=R2(rand(35,75)),n=randInt(2,4),legs=[];
     for(let i=0;i<n;i++){const t=pick(["call","put"]),side=pick(["long","short"]),K=Math.max(5,Math.round(spot)+randInt(-6,6));legs.push(mkLeg(spot,K,t,side,randInt(1,2)));}
     return{name:"Composite",spot,legs};
   },
 };
+
+// Structures that should only be unhedged (already ~delta-neutral or premium-selling strategies)
+const UNHEDGED_ONLY=new Set(["Iron Condor","Iron Butterfly","Jade Lizard","Twisted Sister","Big Lizard"]);
+
 const STRUCT_KEYS=Object.keys(STRUCTS);
 const STRUCT_GROUPS=[
   {label:"Single Legs",keys:["Long Call","Short Call","Long Put","Short Put"]},
   {label:"Volatility",keys:["Straddle","Strangle"]},
   {label:"Spreads",keys:["Vertical Spread","Butterfly","Ratio Spread"]},
+  {label:"Iron Structures",keys:["Iron Condor","Iron Butterfly"]},
+  {label:"Lizards",keys:["Jade Lizard","Twisted Sister","Big Lizard"]},
   {label:"Complex",keys:["Composite"]},
 ];
 
@@ -265,6 +441,46 @@ function ChartModal({data,breakevens,spot,strikes,legs,hedged,onClose}){
   );
 }
 
+/* ═══ SOLUTION BOX ═══ */
+function SolutionBox({legs,spot,hedged}){
+  const[open,setOpen]=useState(false);
+  const sol=useMemo(()=>buildSolution(legs,spot,hedged),[legs,spot,hedged]);
+  return(
+    <div style={{marginTop:12,border:"1px solid #e0e7ff",borderRadius:12,overflow:"hidden",background:"#fafbff"}}>
+      <button onClick={()=>setOpen(o=>!o)} style={{
+        width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",
+        padding:"12px 16px",background:open?"#eef2ff":"#fafbff",border:"none",cursor:"pointer",
+        fontFamily:"'DM Mono',monospace",fontSize:"clamp(13px,3.2vw,14px)",fontWeight:500,color:"#4f46e5",
+      }}>
+        <span>{open?"▼":"▶"} How to solve this</span>
+        <span style={{fontSize:"clamp(11px,2.8vw,12px)",color:"#94a3b8"}}>{open?"hide":"show steps"}</span>
+      </button>
+      {open&&(
+        <div style={{padding:"4px 16px 16px"}}>
+          {sol.steps.map((step,i)=>(
+            <div key={i} style={{marginTop:14}}>
+              <div style={{fontSize:"clamp(12px,3vw,13px)",fontWeight:500,color:"#4338ca",letterSpacing:0.5,marginBottom:6}}>{step.title}</div>
+              {step.lines.map((line,j)=>{
+                const isNote=j===step.lines.length-1 && (line.startsWith("This is")||line.startsWith("Slope =")||line.startsWith("Unhedged")||line.startsWith("Net premium")||line.includes("anchor —"));
+                return(
+                  <div key={j} style={{
+                    fontSize:"clamp(12px,3vw,13.5px)",color:isNote?"#64748b":"#1e293b",
+                    fontStyle:isNote?"italic":"normal",lineHeight:1.5,marginBottom:4,
+                    paddingLeft:10,borderLeft:isNote?"none":"2px solid #e0e7ff",
+                  }}>{line}</div>
+                );
+              })}
+            </div>
+          ))}
+          <div style={{marginTop:16,padding:"10px 14px",background:"#eef2ff",borderRadius:8,fontSize:"clamp(13px,3.2vw,14px)",fontWeight:500,color:"#4338ca"}}>
+            Breakeven{sol.breakevens.length!==1?"s":""}: {sol.breakevens.length===0?"none":sol.breakevens.join(", ")}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ═══ NUMPAD ═══ */
 function Numpad({onKey}){
   const keys=["1","2","3","4","5","6","7","8","9",".","0","⌫"];
@@ -347,6 +563,9 @@ function GameScreen({structKeys,timeLimit,onExit}){
   const[elapsed,setElapsed]=useState(0);
   const[timerActive,setTimerActive]=useState(false);
   const[timeUp,setTimeUp]=useState(false);
+  const[showSlopeHint,setShowSlopeHint]=useState(false);
+  const[confidence,setConfidence]=useState(null);
+  const[calib,setCalib]=useState({}); // {guess:{hit,total},sure:{...},certain:{...}}
   const timerRef=useRef(null);
 
   useEffect(()=>{
@@ -362,12 +581,14 @@ function GameScreen({structKeys,timeLimit,onExit}){
   },[elapsed,timeLimit,submitted,timeUp]);
 
   const generate=useCallback(()=>{
-    const p=STRUCTS[pick(structKeys)]();
-    const h=pick([true,false]);
+    const key=pick(structKeys);
+    const p=STRUCTS[key]();
+    const h=UNHEDGED_ONLY.has(key)?false:pick([true,false]);
     const bes=findBreakevens(p.legs,p.spot,h).filter(b=>b>=0);
     const numBEs=Math.max(1,bes.length);
     setProblem(p);setHedged(h);setAnswers(Array(numBEs).fill(""));setActiveIdx(0);
     setSubmitted(false);setCorrect(null);setShowChart(false);setTimeUp(false);
+    setShowSlopeHint(false);setConfidence(null);
     setElapsed(0);setTimerActive(true);
   },[structKeys]);
 
@@ -375,19 +596,43 @@ function GameScreen({structKeys,timeLimit,onExit}){
 
   const correctBEs=useMemo(()=>problem?findBreakevens(problem.legs,problem.spot,hedged).filter(b=>b>=0):[],[problem,hedged]);
   const chartData=useMemo(()=>problem?payoffCurve(problem.legs,problem.spot,hedged):[],[problem,hedged]);
+  const maxPL=useMemo(()=>problem?maxProfitLoss(problem.legs,problem.spot,hedged):null,[problem,hedged]);
+  const slopeRegions=useMemo(()=>{
+    if(!problem)return[];
+    const strikes=[...new Set(problem.legs.map(l=>l.K))].sort((a,b)=>a-b);
+    const lo=strikes[0]-15,hi=strikes[strikes.length-1]+15;
+    const bounds=[lo,...strikes,hi];
+    const slopeAt=S=>{const eps=0.01;return R3((totalPnl(problem.legs,problem.spot,S+eps,hedged)-totalPnl(problem.legs,problem.spot,S-eps,hedged))/(2*eps));};
+    const out=[];
+    for(let i=0;i<bounds.length-1;i++){
+      const mid=(bounds[i]+bounds[i+1])/2;
+      let label;
+      if(i===0)label=`Below ${strikes[0]}`;
+      else if(i===bounds.length-2)label=`Above ${strikes[strikes.length-1]}`;
+      else label=`${strikes[i-1]}–${strikes[i]}`;
+      out.push({label,slope:slopeAt(mid)});
+    }
+    return out;
+  },[problem,hedged]);
 
   const doSubmit=(forced=false)=>{
     if(submitted)return;
     setTimerActive(false);
     const userBEs=answers.map(a=>parseFloat(a)).filter(a=>!isNaN(a)).sort((a,b)=>a-b);
     let ok=userBEs.length===correctBEs.length;
-    if(ok)for(let i=0;i<correctBEs.length;i++)if(Math.abs(userBEs[i]-correctBEs[i])>0.02)ok=false;
+    if(ok)for(let i=0;i<correctBEs.length;i++)if(Math.abs(userBEs[i]-correctBEs[i])>0.05)ok=false;
     if(forced&&userBEs.length===0)ok=false;
     setSubmitted(true);setCorrect(ok);
     setScore(p=>({hit:p.hit+(ok?1:0),total:p.total+1}));
     const ns=ok?streak+1:0;setStreak(ns);if(ns>bestStreak)setBestStreak(ns);
     const fmt=`${Math.floor(elapsed/60)}:${String(elapsed%60).padStart(2,"0")}`;
     setHistory(prev=>[{name:problem.name,hedged,ok,expected:correctBEs,given:userBEs,time:fmt},...prev].slice(0,40));
+    if(confidence){
+      setCalib(prev=>{
+        const cur=prev[confidence]||{hit:0,total:0};
+        return{...prev,[confidence]:{hit:cur.hit+(ok?1:0),total:cur.total+1}};
+      });
+    }
   };
 
   const handleKey=k=>{
@@ -512,20 +757,64 @@ function GameScreen({structKeys,timeLimit,onExit}){
           </div>
         </div>
 
+        {/* Slope hint (scaffolding) */}
+        {!submitted&&(
+          <div style={{marginBottom:12}}>
+            <button onClick={()=>setShowSlopeHint(s=>!s)} style={{
+              fontSize:"clamp(12px,3vw,13px)",padding:"6px 14px",borderRadius:8,cursor:"pointer",
+              fontFamily:"'DM Mono',monospace",fontWeight:500,
+              background:showSlopeHint?"#fef3c7":"#f8fafc",color:showSlopeHint?"#92400e":"#94a3b8",
+              border:`1px solid ${showSlopeHint?"#fde68a":"#e2e8f0"}`,
+            }}>{showSlopeHint?"▼ Slopes (training wheels)":"▶ Reveal slopes"}</button>
+            {showSlopeHint&&(
+              <div style={{marginTop:8,padding:"10px 14px",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10,fontSize:"clamp(12px,3vw,13.5px)",color:"#78350f",lineHeight:1.6}}>
+                {slopeRegions.map((r,i)=>(
+                  <div key={i}>{r.label}: <span style={{fontWeight:500}}>slope {r.slope>0?"+":""}{r.slope}/$</span>{Math.abs(r.slope)<0.001?" (flat — max P/L plateau)":""}</div>
+                ))}
+                <div style={{marginTop:6,fontStyle:"italic",color:"#a16207"}}>Anchor P&L at a strike ÷ slope = distance to breakeven.</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Confidence selector */}
+        {!submitted&&(
+          <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <span style={{fontSize:"clamp(11px,2.8vw,12px)",color:"#94a3b8",letterSpacing:1,textTransform:"uppercase"}}>Confidence:</span>
+            {[{k:"guess",l:"Guess",c:"#94a3b8"},{k:"sure",l:"Fairly sure",c:"#2563eb"},{k:"certain",l:"Certain",c:"#16a34a"}].map(opt=>(
+              <button key={opt.k} onClick={()=>setConfidence(opt.k)} style={{
+                fontSize:"clamp(11px,2.8vw,12px)",padding:"5px 12px",borderRadius:8,cursor:"pointer",
+                fontFamily:"'DM Mono',monospace",fontWeight:confidence===opt.k?500:400,
+                background:confidence===opt.k?opt.c:"#f8fafc",color:confidence===opt.k?"#fff":"#64748b",
+                border:confidence===opt.k?"none":"1px solid #e2e8f0",transition:"all 0.15s",
+              }}>{opt.l}</button>
+            ))}
+          </div>
+        )}
+
         {submitted&&(
           <div style={{padding:14,borderRadius:12,background:correct?"#f0fdf4":"#fef2f2",border:`1px solid ${correct?"#bbf7d0":"#fecaca"}`,marginBottom:12}}>
             <div style={{fontSize:"clamp(17px,4.2vw,19px)",fontWeight:500,color:correct?"#16a34a":"#dc2626",marginBottom:6}}>
               {timeUp&&!correct?"⏱ Time's up ":"" }{correct?"✓ Correct!":"✗ Not quite"}
               <span style={{marginLeft:8,fontSize:"clamp(13px,3.2vw,14px)",color:"#94a3b8"}}>{fmtTime}</span>
+              {confidence&&<span style={{marginLeft:8,fontSize:"clamp(11px,2.8vw,12px)",color:"#94a3b8"}}>({confidence})</span>}
             </div>
-            <div style={{fontSize:"clamp(14px,3.5vw,15px)",color:"#64748b"}}>
+            <div style={{fontSize:"clamp(14px,3.5vw,15px)",color:"#64748b",marginBottom:8}}>
               BE{correctBEs.length!==1?"s":""}: {correctBEs.length===0?<span style={{color:"#d97706",fontWeight:500}}>None</span>:correctBEs.map((be,i)=><span key={i} style={{color:"#1e293b",fontWeight:500}}>{i>0?", ":""}{be}</span>)}
             </div>
+            {maxPL&&(
+              <div style={{display:"flex",gap:16,fontSize:"clamp(13px,3.2vw,14px)",flexWrap:"wrap"}}>
+                <span style={{color:"#16a34a"}}>Max profit: <span style={{fontWeight:500}}>{maxPL.maxPUnbounded?"unlimited":`+${maxPL.maxP}`}</span></span>
+                <span style={{color:"#dc2626"}}>Max loss: <span style={{fontWeight:500}}>{maxPL.maxLUnbounded?"unlimited":maxPL.maxL}</span></span>
+              </div>
+            )}
           </div>
         )}
 
+        {submitted&&<SolutionBox legs={problem.legs} spot={problem.spot} hedged={hedged}/>}
+
         {submitted&&(
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
             <button onClick={()=>setShowChart(true)} style={{flex:1,padding:"14px",fontSize:"clamp(14px,3.5vw,15px)",fontWeight:500,fontFamily:"'DM Mono',monospace",background:"#fff",border:"1.5px solid #2563eb",borderRadius:12,color:"#2563eb",cursor:"pointer",letterSpacing:0.5}}>VIEW CHART</button>
             <button onClick={generate} style={{flex:1,padding:"14px",fontSize:"clamp(14px,3.5vw,15px)",fontWeight:500,fontFamily:"'DM Mono',monospace",background:"linear-gradient(135deg,#2563eb,#4f46e5)",border:"none",borderRadius:12,color:"#fff",cursor:"pointer",letterSpacing:0.5,boxShadow:"0 2px 12px rgba(37,99,235,0.25)"}}>NEXT →</button>
           </div>
@@ -542,6 +831,30 @@ function GameScreen({structKeys,timeLimit,onExit}){
             background:"linear-gradient(135deg,#2563eb,#4f46e5)",color:"#fff",border:"none",borderRadius:12,
             cursor:"pointer",boxShadow:"0 2px 12px rgba(37,99,235,0.3)",
           }}>SUBMIT</button>
+        </div>
+      )}
+
+      {/* Calibration */}
+      {Object.keys(calib).length>0&&(
+        <div style={{maxWidth:640,margin:"0 auto 10px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:14,padding:"12px 14px",boxShadow:"0 1px 8px rgba(0,0,0,0.03)"}}>
+          <div style={{fontSize:"clamp(10px,2.5vw,11px)",color:"#94a3b8",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Confidence Calibration</div>
+          <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+            {[{k:"guess",l:"Guess",c:"#94a3b8"},{k:"sure",l:"Fairly sure",c:"#2563eb"},{k:"certain",l:"Certain",c:"#16a34a"}].map(opt=>{
+              const d=calib[opt.k];
+              if(!d)return null;
+              const pct=Math.round(d.hit/d.total*100);
+              return(
+                <div key={opt.k} style={{flex:"1 1 90px",background:"#f8fafc",border:`1px solid ${opt.c}33`,borderRadius:10,padding:"8px 12px",textAlign:"center"}}>
+                  <div style={{fontSize:"clamp(10px,2.5vw,11px)",color:"#94a3b8",marginBottom:2}}>{opt.l}</div>
+                  <div style={{fontSize:"clamp(17px,4.2vw,19px)",fontWeight:500,color:opt.c}}>{pct}%</div>
+                  <div style={{fontSize:"clamp(10px,2.5vw,11px)",color:"#cbd5e1"}}>{d.hit}/{d.total}</div>
+                </div>
+              );
+            })}
+          </div>
+          {calib.certain&&calib.certain.total>=2&&calib.certain.hit/calib.certain.total<0.8&&(
+            <div style={{marginTop:8,fontSize:"clamp(12px,3vw,13px)",color:"#dc2626",fontStyle:"italic"}}>⚠ You're missing trades you felt certain on — those are the ones to review closely.</div>
+          )}
         </div>
       )}
 
