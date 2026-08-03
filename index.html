@@ -349,7 +349,7 @@ function Chart({data,breakevens,spot,strikes,legs,hedged}){
   });
 
   return(
-    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",maxWidth:580,height:"auto",display:"block"}}>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",display:"block"}}>
       {yTicks.map(v=><line key={v} x1={P.l} x2={W-P.r} y1={sy(v)} y2={sy(v)} stroke="#e8e8ee" strokeWidth="0.7"/>)}
       <line x1={P.l} x2={W-P.r} y1={zeroY} y2={zeroY} stroke="#b0b0c0" strokeWidth="1.2"/>
       {xTicks.map(v=><text key={v} x={sx(v)} y={H-P.b+16} textAnchor="middle" fill="#888" fontSize="10" fontFamily="'DM Mono',monospace">{v}</text>)}
